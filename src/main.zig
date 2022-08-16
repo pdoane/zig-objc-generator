@@ -1,238 +1,1643 @@
 const std = @import("std");
+const reg = @import("registry.zig");
 
-var allocator: std.mem.Allocator = undefined;
+const Container = reg.Container;
+const Enum = reg.Enum;
+const EnumValue = reg.EnumValue;
+const Method = reg.Method;
+const Param = reg.Param;
+const Property = reg.Property;
+const Registry = reg.Registry;
+const Type = reg.Type;
+const TypeParam = reg.TypeParam;
 
-// ------------------------------------------------------------------------------------------------
-// Clang AST
-
-const AstType = struct {
-    desugaredQualType: []u8 = "",
-    qualType: []u8 = ""
-};
-
-const AstNode = struct {
-    id: []u8,
-    kind: []u8,
-    name: []u8 = "",
-    @"type": ?AstType = null,
-    returnType: ?AstType = null,
-    interface: ?*AstNode = null,
-    inner: []AstNode = &[_]AstNode{},
-};
+var registry: Registry = undefined;
 
 // ------------------------------------------------------------------------------------------------
-// Type DB
+pub const ParseError = error{ UnexpectedCharacter, UnexpectedToken };
 
-const Type = struct {
-    name: []u8,
+pub const Token = struct {
+    kind: Kind,
+    text: []const u8,
 
-    pub fn init(name: []u8) Type {
-        return Type{ .name=name };
-    }
+    const Kind = enum {
+        int,
+        id,
+        dot,
+        comma,
+        lparen,
+        rparen,
+        less,
+        greater,
+        caret,
+        star,
+        kw_api_available,
+        kw_bool,
+        kw_char,
+        kw_class,
+        kw_const,
+        kw_double,
+        kw_float,
+        kw_id,
+        kw_imp,
+        kw_instancetype,
+        kw_int,
+        kw_int8_t,
+        kw_int16_t,
+        kw_int32_t,
+        kw_int64_t,
+        kw_long,
+        kw_nonnull,
+        kw_nullable,
+        kw_short,
+        kw_sel,
+        kw_struct,
+        kw_unsigned,
+        kw_uint,
+        kw_uint8_t,
+        kw_uint16_t,
+        kw_uint32_t,
+        kw_uint64_t,
+        kw_void,
+        eof,
+    };
 };
 
-const Param = struct {
-    name: []u8,
-    ty: Type,
-
-    pub fn init(name: []u8, ty: Type) Param {
-        return Param{ .name=name, .ty=ty };
+fn isdigit(c: u8) bool {
+    switch (c) {
+        '0'...'9' => return true,
+        else => return false,
     }
-};
+}
 
-const Property = struct {
+fn isalnum(c: u8) bool {
+    switch (c) {
+        'a'...'z', 'A'...'Z', '0'...'9' => return true,
+        else => return false,
+    }
+}
+
+pub const Lexer = struct {
     const Self = @This();
-    name: []u8,
-    ty: Type,
 
-    pub fn init(name: []u8, ty: Type) Property {
-        return Property{ .name=name, .ty=ty };
+    source: []const u8,
+    offset: usize = 0,
+
+    pub fn next(self: *Self) !Token {
+        while (true) {
+            const start = self.offset;
+            var c = self.peek();
+            switch (c) {
+                ' ', '\t', '\n', '\r' => {
+                    self.skip();
+                },
+                '0'...'9' => {
+                    self.skip();
+                    c = self.peek();
+                    while (isdigit(c)) {
+                        self.skip();
+                        c = self.peek();
+                    }
+
+                    return self.token(Token.Kind.int, start);
+                },
+                'a'...'z', 'A'...'Z', '_' => {
+                    self.skip();
+                    c = self.peek();
+                    while (isalnum(c) or c == '_') {
+                        self.skip();
+                        c = self.peek();
+                    }
+
+                    const text = self.source[start..self.offset];
+                    const kind = if (std.mem.eql(u8, text, "API_AVAILABLE"))
+                        Token.Kind.kw_api_available
+                    else if (std.mem.eql(u8, text, "BOOL"))
+                        Token.Kind.kw_bool
+                    else if (std.mem.eql(u8, text, "char"))
+                        Token.Kind.kw_char
+                    else if (std.mem.eql(u8, text, "Class"))
+                        Token.Kind.kw_class
+                    else if (std.mem.eql(u8, text, "const"))
+                        Token.Kind.kw_const
+                    else if (std.mem.eql(u8, text, "double"))
+                        Token.Kind.kw_double
+                    else if (std.mem.eql(u8, text, "float"))
+                        Token.Kind.kw_float
+                    else if (std.mem.eql(u8, text, "id"))
+                        Token.Kind.kw_id
+                    else if (std.mem.eql(u8, text, "IMP"))
+                        Token.Kind.kw_imp
+                    else if (std.mem.eql(u8, text, "instancetype"))
+                        Token.Kind.kw_instancetype
+                    else if (std.mem.eql(u8, text, "int"))
+                        Token.Kind.kw_int
+                    else if (std.mem.eql(u8, text, "int8_t"))
+                        Token.Kind.kw_int8_t
+                    else if (std.mem.eql(u8, text, "int16_t"))
+                        Token.Kind.kw_int16_t
+                    else if (std.mem.eql(u8, text, "int32_t"))
+                        Token.Kind.kw_int32_t
+                    else if (std.mem.eql(u8, text, "int64_t"))
+                        Token.Kind.kw_int64_t
+                    else if (std.mem.eql(u8, text, "long"))
+                        Token.Kind.kw_long
+                    else if (std.mem.eql(u8, text, "_Nonnull"))
+                        Token.Kind.kw_nonnull
+                    else if (std.mem.eql(u8, text, "_Nullable"))
+                        Token.Kind.kw_nullable
+                    else if (std.mem.eql(u8, text, "SEL"))
+                        Token.Kind.kw_sel
+                    else if (std.mem.eql(u8, text, "short"))
+                        Token.Kind.kw_short
+                    else if (std.mem.eql(u8, text, "struct"))
+                        Token.Kind.kw_struct
+                    else if (std.mem.eql(u8, text, "uint8_t"))
+                        Token.Kind.kw_uint8_t
+                    else if (std.mem.eql(u8, text, "uint16_t"))
+                        Token.Kind.kw_uint16_t
+                    else if (std.mem.eql(u8, text, "uint32_t"))
+                        Token.Kind.kw_uint32_t
+                    else if (std.mem.eql(u8, text, "uint64_t"))
+                        Token.Kind.kw_uint64_t
+                    else if (std.mem.eql(u8, text, "unsigned"))
+                        Token.Kind.kw_unsigned
+                    else if (std.mem.eql(u8, text, "void"))
+                        Token.Kind.kw_void
+                    else
+                        Token.Kind.id;
+
+                    return self.token(kind, start);
+                },
+                '(' => {
+                    self.skip();
+                    return self.token(Token.Kind.lparen, start);
+                },
+                ')' => {
+                    self.skip();
+                    return self.token(Token.Kind.rparen, start);
+                },
+                '<' => {
+                    self.skip();
+                    return self.token(Token.Kind.less, start);
+                },
+                '>' => {
+                    self.skip();
+                    return self.token(Token.Kind.greater, start);
+                },
+                '^' => {
+                    self.skip();
+                    return self.token(Token.Kind.caret, start);
+                },
+                '*' => {
+                    self.skip();
+                    return self.token(Token.Kind.star, start);
+                },
+                ',' => {
+                    self.skip();
+                    return self.token(Token.Kind.comma, start);
+                },
+                '.' => {
+                    self.skip();
+                    return self.token(Token.Kind.dot, start);
+                },
+                0 => {
+                    return self.token(Token.Kind.eof, start);
+                },
+                else => {
+                    std.debug.print("Unexpected character {c}\n", .{c});
+                    return error.UnexpectedCharacter;
+                },
+            }
+        }
+    }
+
+    fn skip(self: *Self) void {
+        self.offset += 1;
+    }
+
+    fn peek(self: *Self) u8 {
+        if (self.offset < self.source.len) {
+            return self.source[self.offset];
+        } else {
+            return 0;
+        }
+    }
+
+    fn token(self: *Self, kind: Token.Kind, start: usize) Token {
+        return Token{ .kind = kind, .text = self.source[start..self.offset] };
     }
 };
 
-const Method = struct {
+pub const Parser = struct {
     const Self = @This();
-    name: []u8,
-    return_type: Type,
-    params: std.ArrayList(Param),
 
-    pub fn init(name: []u8, return_type: Type, params: std.ArrayList(Param)) Method {
-        return Method{ .name=name, .return_type=return_type, .params=params };
+    allocator: std.mem.Allocator,
+    lookahead: Token,
+    lexer: *Lexer,
+
+    pub fn init(allocator: std.mem.Allocator, lexer: *Lexer) !Parser {
+        return Parser{ .allocator = allocator, .lookahead = try lexer.next(), .lexer = lexer };
+    }
+
+    pub fn parseType(self: *Self) !Type {
+        if (self.lookahead.kind == .kw_api_available) {
+            try self.match(.kw_api_available);
+
+            var nestLevel: u32 = 0;
+            while (true) {
+                if (self.lookahead.kind == .lparen) {
+                    try self.match(.lparen);
+                    nestLevel = nestLevel + 1;
+                } else if (self.lookahead.kind == .rparen) {
+                    try self.match(.rparen);
+                    nestLevel = nestLevel - 1;
+                } else {
+                    self.lookahead = try self.lexer.next();
+                }
+                if (nestLevel == 0)
+                    break;
+            }
+        }
+
+        const is_const = self.lookahead.kind == .kw_const;
+        if (is_const)
+            try self.match(.kw_const);
+
+        switch (self.lookahead.kind) {
+            .kw_void => {
+                try self.match(.kw_void);
+                return self.parsePointer(.{ .@"void" = {} }, is_const, false);
+            },
+            .kw_bool => {
+                try self.match(.kw_bool);
+                return self.parsePointer(.{ .@"bool" = {} }, is_const, false);
+            },
+            .kw_char => {
+                try self.match(.kw_char);
+                return self.parsePointer(.{ .uint = 8 }, is_const, false);
+            },
+            .kw_short => {
+                try self.match(.kw_short);
+                return self.parsePointer(.{ .@"c_short" = {} }, is_const, false);
+            },
+            .kw_int => {
+                try self.match(.kw_int);
+                return self.parsePointer(.{ .@"c_int" = {} }, is_const, false);
+            },
+            .kw_long => {
+                try self.match(.kw_long);
+                if (self.lookahead.kind == .kw_long) {
+                    try self.match(.kw_long);
+                    return self.parsePointer(.{ .@"c_longlong" = {} }, is_const, false);
+                } else {
+                    return self.parsePointer(.{ .@"c_long" = {} }, is_const, false);
+                }
+            },
+            .kw_unsigned => {
+                try self.match(.kw_unsigned);
+                switch (self.lookahead.kind) {
+                    .kw_char => {
+                        try self.match(.kw_char);
+                        return self.parsePointer(.{ .uint = 8 }, is_const, false);
+                    },
+                    .kw_short => {
+                        try self.match(.kw_short);
+                        return self.parsePointer(.{ .@"c_ushort" = {} }, is_const, false);
+                    },
+                    .kw_int => {
+                        try self.match(.kw_int);
+                        return self.parsePointer(.{ .@"c_uint" = {} }, is_const, false);
+                    },
+                    .kw_long => {
+                        try self.match(.kw_long);
+                        if (self.lookahead.kind == .kw_long) {
+                            try self.match(.kw_long);
+                            return self.parsePointer(.{ .@"c_ulonglong" = {} }, is_const, false);
+                        } else {
+                            return self.parsePointer(.{ .@"c_ulong" = {} }, is_const, false);
+                        }
+                    },
+                    else => {
+                        return self.parsePointer(.{ .@"c_uint" = {} }, is_const, false);
+                    },
+                }
+            },
+            .kw_int8_t => {
+                try self.match(.kw_int8_t);
+                return self.parsePointer(.{ .int = 8 }, is_const, false);
+            },
+            .kw_int16_t => {
+                try self.match(.kw_int16_t);
+                return self.parsePointer(.{ .int = 16 }, is_const, false);
+            },
+            .kw_int32_t => {
+                try self.match(.kw_int32_t);
+                return self.parsePointer(.{ .int = 32 }, is_const, false);
+            },
+            .kw_int64_t => {
+                try self.match(.kw_int64_t);
+                return self.parsePointer(.{ .int = 64 }, is_const, false);
+            },
+            .kw_uint => {
+                try self.match(.kw_uint);
+                return self.parsePointer(.{ .uint = 32 }, is_const, false);
+            },
+            .kw_uint8_t => {
+                try self.match(.kw_uint8_t);
+                return self.parsePointer(.{ .uint = 8 }, is_const, false);
+            },
+            .kw_uint16_t => {
+                try self.match(.kw_uint16_t);
+                return self.parsePointer(.{ .uint = 16 }, is_const, false);
+            },
+            .kw_uint32_t => {
+                try self.match(.kw_uint32_t);
+                return self.parsePointer(.{ .uint = 32 }, is_const, false);
+            },
+            .kw_uint64_t => {
+                try self.match(.kw_uint64_t);
+                return self.parsePointer(.{ .uint = 64 }, is_const, false);
+            },
+            .kw_float => {
+                try self.match(.kw_float);
+                return self.parsePointer(.{ .float = 32 }, is_const, false);
+            },
+            .kw_double => {
+                try self.match(.kw_double);
+                return self.parsePointer(.{ .float = 64 }, is_const, false);
+            },
+            .kw_class => {
+                try self.match(.kw_class);
+                const t = Type{ .name = "c.objc_class" };
+
+                const child = try self.allocator.create(Type);
+                child.* = t;
+
+                return Type{ .pointer = .{ .is_single = true, .is_const = is_const, .is_optional = false, .child = child } };
+            },
+            .kw_sel => {
+                try self.match(.kw_sel);
+                const t = Type{ .name = "c.objc_selector" };
+                const child = try self.allocator.create(Type);
+                child.* = t;
+
+                return Type{ .pointer = .{ .is_single = true, .is_const = is_const, .is_optional = false, .child = child } };
+            },
+            .kw_id => {
+                try self.match(.kw_id);
+
+                if (self.lookahead.kind == .less) {
+                    try self.match(.less);
+                    const t = try self.parseTypeList();
+                    try self.match(.greater);
+
+                    return self.parsePointerSuffix(t, is_const, true);
+                } else {
+                    const t = Type{ .name = "c.objc_object" };
+                    return self.parsePointerSuffix(t, is_const, true);
+                }
+            },
+            .kw_imp => {
+                try self.match(.kw_imp);
+                return self.parsePointer(.{ .function = .{} }, is_const, true);
+            },
+            .kw_instancetype => {
+                try self.match(.kw_instancetype);
+
+                const child = try self.allocator.create(Type);
+                child.* = .{ .instance_type = {} };
+
+                return Type{ .pointer = .{ .is_single = true, .is_const = is_const, .is_optional = false, .child = child } };
+            },
+            .kw_struct => {
+                try self.match(.kw_struct);
+                const name = self.lookahead.text;
+                try self.match(.id);
+                return self.parsePointer(.{ .name = name }, is_const, false);
+            },
+            else => {
+                const name = self.lookahead.text;
+                try self.match(.id);
+                return self.parsePointer(.{ .name = name }, is_const, false);
+            },
+        }
+    }
+
+    fn parseTypeList(self: *Self) (ParseError || error{OutOfMemory})!Type {
+        const t = try self.parseType();
+        if (self.lookahead.kind == .comma) {
+            try self.match(.comma);
+            // TODO - how to handle?
+            _ = try self.parseTypeList();
+        }
+
+        return t;
+    }
+
+    fn parsePointer(self: *Self, elem_type: Type, elem_is_const: bool, is_single: bool) !Type {
+        if (self.lookahead.kind == .star) {
+            try self.match(.star);
+
+            return self.parsePointerSuffix(elem_type, elem_is_const, is_single);
+        } else {
+            return elem_type;
+        }
+    }
+
+    fn parsePointerSuffix(self: *Self, elem_type: Type, elem_is_const: bool, is_single: bool) !Type {
+        var is_const = false;
+        var is_optional = false;
+        while (true) {
+            if (self.lookahead.kind == .kw_const) {
+                try self.match(.kw_const);
+                is_const = true;
+            } else if (self.lookahead.kind == .kw_nullable) {
+                try self.match(.kw_nullable);
+                is_optional = true;
+            } else if (self.lookahead.kind == .kw_nonnull) {
+                try self.match(.kw_nonnull);
+            } else break;
+        }
+
+        const child = try self.allocator.create(Type);
+        child.* = elem_type;
+
+        const t = Type{ .pointer = .{
+            .is_single = is_single,
+            .is_const = elem_is_const or is_const,
+            .is_optional = is_optional,
+            .child = child,
+        } };
+        return self.parsePointer(t, false, is_single);
+    }
+
+    fn match(self: *Self, k: Token.Kind) !void {
+        if (self.lookahead.kind == k) {
+            self.lookahead = try self.lexer.next();
+        } else {
+            std.debug.print("Expected {any} but found {any}\n", .{ k, self.lookahead.kind });
+            return error.UnexpectedToken;
+        }
+    }
+};
+
+// ------------------------------------------------------------------------------------------------
+
+pub fn getObject(x: std.json.Value, key: []const u8) ?std.json.Value {
+    switch (x) {
+        .Object => |o| {
+            if (o.get(key)) |v| {
+                switch (v) {
+                    .Object => return v,
+                    else => return null,
+                }
+            } else {
+                return null;
+            }
+        },
+        else => return null,
+    }
+}
+
+pub fn getArray(x: std.json.Value, key: []const u8) []std.json.Value {
+    switch (x) {
+        .Object => |o| {
+            if (o.get(key)) |v| {
+                switch (v) {
+                    .Array => |a| {
+                        return a.items;
+                    },
+                    else => return &[_]std.json.Value{},
+                }
+            } else {
+                return &[_]std.json.Value{};
+            }
+        },
+        else => return &[_]std.json.Value{},
+    }
+}
+
+pub fn getString(x: std.json.Value, key: []const u8) []const u8 {
+    switch (x) {
+        .Object => |o| {
+            if (o.get(key)) |v| {
+                switch (v) {
+                    .String => |s| {
+                        return s;
+                    },
+                    else => return "",
+                }
+            } else {
+                return "";
+            }
+        },
+        else => return "",
+    }
+}
+
+pub fn getBool(x: std.json.Value, key: []const u8) bool {
+    switch (x) {
+        .Object => |o| {
+            if (o.get(key)) |v| {
+                switch (v) {
+                    .Bool => |b| {
+                        return b;
+                    },
+                    else => return false,
+                }
+            } else {
+                return false;
+            }
+        },
+        else => return false,
+    }
+}
+
+pub const Converter = struct {
+    const Self = @This();
+
+    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
+
+    pub fn init(allocator: std.mem.Allocator) Converter {
+        return Converter{ .allocator = allocator, .arena = std.heap.ArenaAllocator.init(allocator) };
     }
 
     pub fn deinit(self: *Self) void {
-        self.params.deinit();
+        self.arena.deinit();
+    }
+
+    pub fn convert(self: *Self, n: std.json.Value) !void {
+        const kind = getString(n, "kind");
+        if (std.mem.eql(u8, kind, "TranslationUnitDecl")) {
+            try self.convertTranslationUnitDecl(n);
+        }
+    }
+
+    fn convertTranslationUnitDecl(self: *Self, n: std.json.Value) !void {
+        for (getArray(n, "inner")) |child| {
+            const childKind = getString(child, "kind");
+            if (std.mem.eql(u8, childKind, "EnumDecl")) {
+                try self.convertEnumDecl(child);
+            } else if (std.mem.eql(u8, childKind, "FunctionDecl")) {
+                self.convertFunctionDecl(child);
+            } else if (std.mem.eql(u8, childKind, "ObjCCategoryDecl")) {
+                try self.convertObjCCategoryDecl(child);
+            } else if (std.mem.eql(u8, childKind, "ObjCInterfaceDecl")) {
+                try self.convertObjCInterfaceDecl(child);
+            } else if (std.mem.eql(u8, childKind, "ObjCProtocolDecl")) {
+                try self.convertObjcProtocolDecl(child);
+            } else if (std.mem.eql(u8, childKind, "RecordDecl")) {
+                self.convertRecordDecl(child);
+            } else if (std.mem.eql(u8, childKind, "TypedefDecl")) {
+                self.convertTypedefDecl(child);
+            } else if (std.mem.eql(u8, childKind, "VarDecl")) {
+                self.convertVarDecl(child);
+            }
+        }
+    }
+
+    fn convertEnumDecl(self: *Self, n: std.json.Value) !void {
+        var name = getString(n, "name");
+        if (name.len == 0) {
+            return;
+        }
+
+        var e = try registry.getEnum(name);
+        if (getObject(n, "fixedUnderlyingType")) |ty| {
+            e.ty = try self.convertType(ty);
+        } else {
+            e.ty = .{ .int = 32 };
+        }
+
+        for (getArray(n, "inner")) |child| {
+            const childKind = getString(child, "kind");
+            if (std.mem.eql(u8, childKind, "EnumConstantDecl")) {
+                var v = try self.convertEnumConstantDecl(child);
+                try e.values.append(v);
+            }
+        }
+    }
+
+    fn convertEnumConstantDecl(self: *Self, n: std.json.Value) !EnumValue {
+        var value: i64 = 0;
+        for (getArray(n, "inner")) |child| {
+            const childKind = getString(child, "kind");
+            if (std.mem.eql(u8, childKind, "ConstantExpr")) {
+                value = self.convertConstantExpr(child);
+            } else if (std.mem.eql(u8, childKind, "ImplicitCastExpr")) {
+                value = self.convertImplicitCastExpr(child);
+            }
+        }
+
+        return .{ .name = getString(n, "name"), .value = value };
+    }
+
+    fn convertConstantExpr(_: *Self, n: std.json.Value) i64 {
+        var value = getString(n, "value");
+        return std.fmt.parseInt(i64, value, 10) catch 0;
+    }
+
+    fn convertImplicitCastExpr(self: *Self, n: std.json.Value) i64 {
+        for (getArray(n, "inner")) |child| {
+            const childKind = getString(child, "kind");
+            if (std.mem.eql(u8, childKind, "ConstantExpr")) {
+                return self.convertConstantExpr(child);
+            }
+        }
+
+        return 0;
+    }
+
+    fn convertFunctionDecl(self: *Self, n: std.json.Value) void {
+        _ = self;
+        _ = n;
+    }
+
+    fn convertObjCCategoryDecl(self: *Self, n: std.json.Value) !void {
+        var interfaceDecl = getObject(n, "interface").?;
+        var container = try registry.getInterface(getString(interfaceDecl, "name"));
+        try self.convertContainer(container, n);
+    }
+
+    fn convertObjCInterfaceDecl(self: *Self, n: std.json.Value) !void {
+        var container = try registry.getInterface(getString(n, "name"));
+        if (getObject(n, "super")) |super| {
+            const superName = getString(super, "name");
+            if (superName.len > 0) {
+                container.super = try registry.getInterface(superName);
+            }
+        }
+
+        try self.convertContainer(container, n);
+    }
+
+    fn convertObjcProtocolDecl(self: *Self, n: std.json.Value) !void {
+        var container = try registry.getProtocol(getString(n, "name"));
+        if (getObject(n, "super")) |super| {
+            const superName = getString(super, "name");
+            if (superName.len > 0) {
+                container.super = try registry.getProtocol(superName);
+            }
+        }
+
+        try self.convertContainer(container, n);
+    }
+
+    fn convertRecordDecl(self: *Self, n: std.json.Value) void {
+        _ = self;
+        _ = n;
+    }
+
+    fn convertTypedefDecl(self: *Self, n: std.json.Value) void {
+        _ = self;
+        _ = n;
+    }
+
+    fn convertVarDecl(self: *Self, n: std.json.Value) void {
+        _ = self;
+        _ = n;
+    }
+
+    fn convertContainer(self: *Self, container: *Container, n: std.json.Value) !void {
+        // TODO - better solution for this?
+        container.type_params.clearAndFree();
+        container.protocols.clearAndFree();
+
+        for (getArray(n, "protocols")) |protocolJson| {
+            const protocolName = getString(protocolJson, "name");
+            var protocol = try registry.getProtocol(protocolName);
+            try container.protocols.append(protocol);
+        }
+
+        for (getArray(n, "inner")) |child| {
+            const childKind = getString(child, "kind");
+            if (std.mem.eql(u8, childKind, "ObjCTypeParamDecl")) {
+                var type_param = try self.convertTypeParam(child);
+                try container.type_params.append(type_param);
+            } else if (std.mem.eql(u8, childKind, "ObjCPropertyDecl")) {
+                var property = try self.convertProperty(child);
+                try container.properties.append(property);
+            } else if (std.mem.eql(u8, childKind, "ObjCMethodDecl")) {
+                var method = try self.convertMethod(child);
+                try container.methods.append(method);
+            }
+        }
+    }
+
+    fn convertTypeParam(self: *Self, n: std.json.Value) !TypeParam {
+        _ = self;
+        return TypeParam.init(getString(n, "name"));
+    }
+
+    fn convertProperty(self: *Self, n: std.json.Value) !Property {
+        var ty = try self.convertType(getObject(n, "type").?);
+        return Property.init(getString(n, "name"), ty);
+    }
+
+    fn convertMethod(self: *Self, n: std.json.Value) !Method {
+        var return_type = try self.convertType(getObject(n, "returnType").?);
+        var params = std.ArrayList(Param).init(registry.allocator);
+
+        for (getArray(n, "inner")) |child| {
+            const childKind = getString(child, "kind");
+            if (std.mem.eql(u8, childKind, "ParmVarDecl")) {
+                var param = try self.convertParam(child);
+                try params.append(param);
+            }
+        }
+
+        return Method.init(getString(n, "name"), getBool(n, "instance"), return_type, params);
+    }
+
+    fn convertParam(self: *Self, n: std.json.Value) !Param {
+        const ty = try self.convertType(getObject(n, "type").?);
+        return Param.init(getString(n, "name"), ty);
+    }
+
+    fn convertType(self: *Self, t: std.json.Value) !Type {
+        //std.debug.print("convertType: {s}\n", .{t.qualType});
+        var lexer = Lexer{ .source = getString(t, "qualType") };
+        var parser = try Parser.init(self.arena.allocator(), &lexer);
+        return parser.parseType();
     }
 };
 
-const ObjCContainer = struct {
-    const Self = @This();
-    name: []u8,
-    properties: std.ArrayList(Property),
-    methods: std.ArrayList(Method),
-    is_interface: bool = false,
-
-    pub fn init(name: []u8) ObjCContainer {
-        return ObjCContainer{ .name=name, .methods=std.ArrayList(Method).init(allocator), .properties=std.ArrayList(Property).init(allocator) };
-    }
-
-    pub fn deinit(self: *Self) void {
-        for (self.methods.items) |*method| {
-            method.deinit();
-        }
-        self.properties.deinit();
-        self.methods.deinit();
-    }
-};
-
-var containers: std.StringHashMap(ObjCContainer) = undefined;
-
-// ------------------------------------------------------------------------------------------------
-// Containers
-
-fn getContainer(name: []u8) !*ObjCContainer {
-    var v = try containers.getOrPut(name);
-    if (!v.found_existing) {
-        v.value_ptr.* = ObjCContainer.init(name);
-    }
-
-    return v.value_ptr;
-}
-
-fn convertType(t: AstType) Type {
-    return Type.init(t.qualType);
-}
-
-fn convertParam(n: AstNode) Param {
-    var ty = convertType(n.@"type".?);
-    return Param.init(n.name, ty);
-}
-
-fn convertProperty(n: AstNode) Property {
-    var ty = convertType(n.@"type".?);
-    return Property.init(n.name, ty);
-}
-
-fn convertMethod(n: AstNode) !Method {
-    var return_type = convertType(n.returnType.?);
-    var params = std.ArrayList(Param).init(allocator);
-
-    for (n.inner) |child| {
-        if (std.mem.eql(u8, child.kind, "ParmVarDecl")) {
-            var param = convertParam(child);
-            try params.append(param);
-        }
-    }
-
-    return Method.init(n.name, return_type, params);
-}
-
-fn convertContainer(container: *ObjCContainer, n: AstNode) !void {
-    for (n.inner) |child| {
-        if (std.mem.eql(u8, child.kind, "ObjCPropertyDecl")) {
-            var property = convertProperty(child);
-            try container.properties.append(property);
-        }
-        if (std.mem.eql(u8, child.kind, "ObjCMethodDecl")) {
-            var method = try convertMethod(child);
-            try container.methods.append(method);
-        }
-    }
-}
-
-// ------------------------------------------------------------------------------------------------
-// Decls
-
-fn convertEnumDecl(n: AstNode) void {
-    _ = n;
-}
-
-fn convertFunctionDecl(n: AstNode) void {
-    _ = n;
-}
-
-fn convertObjCCategoryDecl(n: AstNode) !void {
-    var interfaceDecl = n.interface.?;
-    var container = try getContainer(interfaceDecl.name);
-    try convertContainer(container, n);
-}
-
-fn convertObjCInterfaceDecl(n: AstNode) !void {
-    var container = try getContainer(n.name);
-    container.is_interface = true;
-    try convertContainer(container, n);
-}
-
-fn convertObjcProtocolDecl(n: AstNode) !void {
-    var container = try getContainer(n.name);
-    try convertContainer(container, n);
-}
-
-fn convertRecordDecl(n: AstNode) void {
-    _ = n;
-}
-
-fn convertTypedefDecl(n: AstNode) void {
-    _ = n;
-}
-
-fn convertVarDecl(n: AstNode) void {
-    _ = n;
-}
-
-// ------------------------------------------------------------------------------------------------
-// Translation unit
-
-fn convertTranslationUnitDecl(n: AstNode) !void {
-    for (n.inner) |child| {
-        if (std.mem.eql(u8, child.kind, "EnumDecl")) {
-            convertEnumDecl(child);
-        }
-        else if (std.mem.eql(u8, child.kind, "FunctionDecl")) {
-            convertFunctionDecl(child);
-        }
-        else if (std.mem.eql(u8, child.kind, "ObjCCategoryDecl")) {
-            try convertObjCCategoryDecl(child);
-        }
-        else if (std.mem.eql(u8, child.kind, "ObjCInterfaceDecl")) {
-            try convertObjCInterfaceDecl(child);
-        }
-        else if (std.mem.eql(u8, child.kind, "ObjCProtocolDecl")) {
-            try convertObjcProtocolDecl(child);
-        }
-        else if (std.mem.eql(u8, child.kind, "RecordDecl")) {
-            convertRecordDecl(child);
-        }
-        else if (std.mem.eql(u8, child.kind, "TypedefDecl")) {
-            convertTypedefDecl(child);
-        }
-        else if (std.mem.eql(u8, child.kind, "VarDecl")) {
-            convertVarDecl(child);
-        }
-    }
-}
-
-fn convert(n: AstNode) !void {
-    if (std.mem.eql(u8, n.kind, "TranslationUnitDecl")) {
-        try convertTranslationUnitDecl(n);
-    }
-}
-
 // ------------------------------------------------------------------------------------------------
 
-fn container_type_string(container: ObjCContainer) []const u8 {
-    if (container.is_interface) {
-        return "interface";
+const prefixes = [_][]const u8{ "CA", "CF", "CG", "MTK", "MTL", "NS" };
+
+pub fn getNamespace(id: []const u8) []const u8 {
+    for (prefixes) |prefix| {
+        if (std.mem.startsWith(u8, id, prefix)) {
+            return prefix;
+        }
+    }
+
+    return &[_]u8{};
+}
+
+pub fn trimNamespace(id: []const u8) []const u8 {
+    for (prefixes) |prefix| {
+        if (std.mem.startsWith(u8, id, prefix)) {
+            return id[prefix.len..];
+        }
+    }
+
+    return id;
+}
+
+pub fn trimTrailingColon(id: []const u8) []const u8 {
+    if (id.len == 0) {
+        return id;
+    } else if (id[id.len - 1] == ':') {
+        return id[0 .. id.len - 1];
     } else {
-        return "protocol";
+        return id;
     }
+}
+
+fn isKeyword(id: []const u8) bool {
+    if (std.mem.eql(u8, id, "error")) {
+        return true;
+    } else if (std.mem.eql(u8, id, "opaque")) {
+        return true;
+    } else if (std.mem.eql(u8, id, "type")) {
+        return true;
+    } else {
+        return false;
+    }
+}
+
+fn Generator(comptime WriterType: type) type {
+    return struct {
+        const Self = @This();
+        const WriteError = WriterType.Error;
+        const EnumList = std.ArrayList(*reg.Enum);
+        const ContainerList = std.ArrayList(*reg.Container);
+        const SelectorHashSet = std.StringHashMap(void);
+
+        allocator: std.mem.Allocator,
+        writer: WriterType,
+        enums: EnumList,
+        containers: ContainerList,
+        selectors: SelectorHashSet,
+
+        fn init(allocator: std.mem.Allocator, writer: WriterType) Self {
+            return Self{
+                .allocator = allocator,
+                .writer = writer,
+                .enums = EnumList.init(allocator),
+                .containers = ContainerList.init(allocator),
+                .selectors = SelectorHashSet.init(allocator),
+            };
+        }
+
+        fn deinit(self: *Self) void {
+            self.enums.deinit();
+            self.containers.deinit();
+            self.selectors.deinit();
+        }
+
+        pub fn addProtocol(self: *Self, name: []const u8) !void {
+            var container = registry.protocols.get(name) orelse {
+                std.debug.print("Protocol {s} not found\n", .{name});
+                return;
+            };
+
+            try self.addContainer(container);
+        }
+
+        pub fn addInterface(self: *Self, name: []const u8) !void {
+            var container = registry.interfaces.get(name) orelse {
+                std.debug.print("Interface {s} not found\n", .{name});
+                return;
+            };
+
+            try self.addContainer(container);
+        }
+
+        pub fn addEnum(self: *Self, name: []const u8) !void {
+            var e = registry.enums.get(name) orelse {
+                std.debug.print("Enum {s} not found\n", .{name});
+                return;
+            };
+
+            try self.enums.append(e);
+        }
+
+        fn addContainer(self: *Self, container: *Container) !void {
+            try self.containers.append(container);
+
+            for (container.methods.items) |method| {
+                try self.selectors.put(method.name, {});
+            }
+        }
+
+        pub fn generate(self: *Self) !void {
+            try self.generateEnumerations();
+            try self.generateContainers();
+            try self.generateClasses();
+            try self.generateSelectors();
+            try self.generateInit();
+        }
+
+        fn generateClasses(self: *Self) !void {
+            for (self.containers.items) |container| {
+                if (container.is_interface) {
+                    try self.writer.print("var class_", .{});
+                    try self.generateContainerName(container);
+                    try self.writer.print(": *c.objc_class = undefined;\n", .{});
+                }
+            }
+        }
+
+        fn generateSelectors(self: *Self) !void {
+            var it = self.selectors.iterator();
+            while (it.next()) |entry| {
+                const method_name = entry.key_ptr.*;
+                try self.writer.print("var sel_", .{});
+                try self.generateSelectorName(method_name);
+                try self.writer.print(": *c.objc_selector = undefined;\n", .{});
+            }
+            try self.writer.print("\n", .{});
+        }
+
+        fn generateInit(self: *Self) !void {
+            try self.writer.print("pub fn init() void {{\n", .{});
+            try self.generateInitClasses();
+            try self.writer.print("\n", .{});
+            try self.generateInitSelectors();
+            try self.writer.print("}}\n", .{});
+        }
+
+        fn generateInitClasses(self: *Self) !void {
+            for (self.containers.items) |container| {
+                if (container.is_interface) {
+                    try self.writer.print("    class_", .{});
+                    try self.generateContainerName(container);
+                    try self.writer.print(" = c.objc_getClass(\"{s}\").?;\n", .{container.name});
+                }
+            }
+        }
+
+        fn generateInitSelectors(self: *Self) !void {
+            var it = self.selectors.iterator();
+            while (it.next()) |entry| {
+                const method_name = entry.key_ptr.*;
+                try self.writer.print("    sel_", .{});
+                try self.generateSelectorName(method_name);
+                try self.writer.print(" = c.sel_registerName(\"{s}\").?;\n", .{method_name});
+            }
+        }
+
+        fn generateEnumerations(self: *Self) !void {
+            for (self.enums.items) |e| {
+                try self.writer.writeAll("\n");
+                try self.writer.print("pub const ", .{});
+                try self.generateTypeName(e.name);
+                try self.writer.print(" = ", .{});
+                try self.generateType(e.ty);
+                try self.writer.print(";\n", .{});
+
+                for (e.values.items) |v| {
+                    try self.writer.print("pub const ", .{});
+                    try self.generateTypeName(v.name);
+                    try self.writer.print(": ", .{});
+                    try self.generateTypeName(e.name);
+                    try self.writer.print(" = {d};\n", .{v.value});
+                }
+            }
+        }
+
+        fn generateContainers(self: *Self) !void {
+            for (self.containers.items) |container| {
+                try self.generateContainer(container);
+            }
+        }
+
+        fn generateContainer(self: *Self, container: *Container) !void {
+            try self.writer.writeAll("\n");
+            if (container.type_params.items.len > 0) {
+                try self.writer.print("pub fn ", .{});
+                try self.generateContainerName(container);
+                try self.writer.print("(", .{});
+                var first = true;
+                for (container.type_params.items) |type_param| {
+                    if (!first)
+                        try self.writer.writeAll(", ");
+                    first = false;
+                    try self.writer.print("comptime {s}: type", .{type_param.name});
+                }
+                try self.writer.print(") type {{ return opaque {{\n", .{});
+            } else {
+                try self.writer.print("pub const ", .{});
+                try self.generateContainerName(container);
+                try self.writer.print(" = opaque {{\n", .{});
+            }
+            try self.writer.print("    const Self = @This();\n", .{});
+            if (container.super) |super| {
+                try self.writer.print("    pub const Super = ", .{});
+                try self.generateContainerName(super);
+                try self.writer.print(";\n", .{});
+            }
+            if (container.protocols.items.len > 0) {
+                try self.writer.print("    pub const ConformsTo = &[_]type{{ ", .{});
+                var first = true;
+                for (container.protocols.items) |protocol| {
+                    if (!first)
+                        try self.writer.writeAll(", ");
+                    first = false;
+                    try self.generateContainerName(protocol);
+                }
+                try self.writer.print(" }};\n", .{});
+            }
+            try self.writer.print("    pub usingnamespace Methods(Self);\n", .{});
+            if (container.is_interface) {
+                try self.writer.print("    pub fn class() *c.objc_class {{ return class_", .{});
+                try self.generateContainerName(container);
+                try self.writer.print("; }}\n", .{});
+            }
+            try self.writer.print("\n", .{});
+            try self.writer.print("    pub fn Methods(comptime T: type) type {{\n", .{});
+            try self.writer.print("        return struct {{\n", .{});
+
+            var hasParent = false;
+            if (container.super) |super| {
+                try self.writer.print("            pub usingnamespace ", .{});
+                try self.generateContainerName(super);
+                try self.writer.print(".Methods(T);\n", .{});
+                hasParent = true;
+            }
+
+            for (container.protocols.items) |protocol| {
+                try self.writer.print("            pub usingnamespace ", .{});
+                try self.generateContainerName(protocol);
+                try self.writer.print(".Methods(T);\n", .{});
+                hasParent = true;
+            }
+
+            if (hasParent) {
+                try self.writer.print("\n", .{});
+            }
+
+            for (container.methods.items) |method| {
+                try self.writer.writeAll("            pub fn ");
+                try self.generateMethodName(method.name);
+                try self.writer.print("(", .{});
+                var first = true;
+                if (method.instance) {
+                    try self.writer.print("self_: *T", .{});
+                    first = false;
+                }
+                for (method.params.items) |param| {
+                    if (!first)
+                        try self.writer.writeAll(", ");
+                    first = false;
+                    try self.writer.print("{s}_: ", .{param.name});
+                    try self.generateType(param.ty);
+                }
+                try self.writer.print(") ", .{});
+                try self.generateType(method.return_type);
+                try self.writer.print(" {{\n", .{});
+                try self.writer.print("                return @ptrCast(*const fn (", .{});
+                if (method.instance) {
+                    try self.writer.print("*T", .{});
+                } else {
+                    try self.writer.print("*c.objc_class", .{});
+                }
+                try self.writer.print(", *c.objc_selector", .{});
+                for (method.params.items) |param| {
+                    try self.writer.writeAll(", ");
+                    try self.generateType(param.ty);
+                }
+                try self.writer.print(") callconv(.C) ", .{});
+                try self.generateType(method.return_type);
+                try self.writer.print(", &c.objc_msgSend)(", .{});
+                if (method.instance) {
+                    try self.writer.print("self_", .{});
+                } else {
+                    try self.writer.print("T.class()", .{});
+                }
+                try self.writer.print(", sel_", .{});
+                try self.generateSelectorName(method.name);
+                for (method.params.items) |param| {
+                    try self.writer.writeAll(", ");
+                    try self.writer.print("{s}_", .{param.name});
+                }
+                try self.writer.print(");\n", .{});
+                try self.writer.print("            }}\n", .{});
+            }
+
+            try self.writer.print("        }};\n", .{});
+            try self.writer.print("    }}\n", .{});
+            try self.writer.print("}};\n", .{});
+            if (container.type_params.items.len > 0) {
+                try self.writer.print("}}\n", .{});
+            }
+        }
+
+        fn generateMethodName(self: *Self, name: []const u8) !void {
+            if (isKeyword(name)) {
+                try self.writer.print("@\"{s}\"", .{name});
+            } else {
+                try self.generateSelectorName(trimTrailingColon(name));
+            }
+        }
+
+        fn generateSelectorName(self: *Self, name: []const u8) !void {
+            for (name) |ch| {
+                if (ch == ':') {
+                    try self.writer.writeByte('_');
+                } else {
+                    try self.writer.writeByte(ch);
+                }
+            }
+        }
+
+        fn generateType(self: *Self, ty: Type) WriteError!void {
+            switch (ty) {
+                .@"void" => {
+                    try self.writer.writeAll("void");
+                },
+                .@"bool" => {
+                    try self.writer.writeAll("bool");
+                },
+                .int => |bits| {
+                    try self.writer.print("i{d}", .{bits});
+                },
+                .uint => |bits| {
+                    try self.writer.print("u{d}", .{bits});
+                },
+                .float => |bits| {
+                    try self.writer.print("f{d}", .{bits});
+                },
+                .@"c_short" => {
+                    try self.writer.writeAll("c_short");
+                },
+                .@"c_ushort" => {
+                    try self.writer.writeAll("c_ushort");
+                },
+                .@"c_int" => {
+                    try self.writer.writeAll("c_int");
+                },
+                .@"c_uint" => {
+                    try self.writer.writeAll("c_uint");
+                },
+                .@"c_long" => {
+                    try self.writer.writeAll("c_long");
+                },
+                .@"c_ulong" => {
+                    try self.writer.writeAll("c_ulong");
+                },
+                .@"c_longlong" => {
+                    try self.writer.writeAll("c_longlong");
+                },
+                .@"c_ulonglong" => {
+                    try self.writer.writeAll("c_ulonglong");
+                },
+                .name => |n| {
+                    try self.generateTypeName(n);
+                },
+                .instance_type => {
+                    try self.writer.writeAll("T");
+                },
+                .pointer => |p| {
+                    if (p.is_optional)
+                        try self.writer.writeAll("?");
+                    if (p.is_single or p.is_optional) {
+                        try self.writer.writeAll("*");
+                    } else {
+                        //try self.writer.writeAll("[*c]");
+                        try self.writer.writeAll("*");
+                    }
+                    if (p.is_const)
+                        try self.writer.writeAll("const ");
+                    if (p.child.* == .@"void") {
+                        try self.writer.writeAll("anyopaque");
+                    } else {
+                        try self.generateType(p.child.*);
+                    }
+                },
+                .function => {
+                    try self.writer.writeAll("fn () callconv(.C) void");
+                },
+            }
+        }
+
+        fn generateTypePrefix(self: *Self, name: []const u8) !void {
+            const namespace = getNamespace(name);
+            if (namespace.len > 0 and !std.mem.eql(u8, namespace, "MTL")) {
+                try self.generateLower(namespace);
+                try self.writer.writeAll(".");
+            }
+        }
+
+        fn generateContainerSuffix(self: *Self, container: *Container) !void {
+            if (container.ambiguous) {
+                if (container.is_interface) {
+                    try self.writer.writeAll("Interface");
+                } else {
+                    try self.writer.writeAll("Protocol");
+                }
+            }
+        }
+
+        fn generateTypeName(self: *Self, name: []const u8) !void {
+            try self.generateTypePrefix(name);
+            try self.writer.writeAll(trimNamespace(name));
+            if (registry.protocols.get(name)) |container| {
+                try self.generateContainerSuffix(container);
+            } else if (registry.interfaces.get(name)) |container| {
+                try self.generateContainerSuffix(container);
+            }
+        }
+
+        fn generateContainerName(self: *Self, container: *Container) !void {
+            try self.generateTypePrefix(container.name);
+            try self.writer.writeAll(trimNamespace(container.name));
+            try self.generateContainerSuffix(container);
+        }
+
+        fn generateLower(self: *Self, str: []const u8) !void {
+            for (str) |ch| {
+                try self.writer.writeByte(std.ascii.toLower(ch));
+            }
+        }
+    };
+}
+
+// ------------------------------------------------------------------------------------------------
+
+fn generateMetal(generator: anytype) !void {
+    // MTLAccelerationStructure.hpp
+    try generator.addEnum("MTLAccelerationStructureUsage");
+    try generator.addEnum("MTLAccelerationStructureInstanceOptions");
+    try generator.addInterface("MTLAccelerationStructureDescriptor");
+    try generator.addInterface("MTLAccelerationStructureGeometryDescriptor");
+    try generator.addEnum("MTLMotionBorderMode");
+    try generator.addInterface("MTLPrimitiveAccelerationStructureDescriptor");
+    try generator.addInterface("MTLAccelerationStructureTriangleGeometryDescriptor");
+    try generator.addInterface("MTLAccelerationStructureBoundingBoxGeometryDescriptor");
+    try generator.addInterface("MTLMotionKeyframeData");
+    try generator.addInterface("MTLAccelerationStructureMotionTriangleGeometryDescriptor");
+    try generator.addInterface("MTLAccelerationStructureMotionBoundingBoxGeometryDescriptor");
+    //try generator.addStruct("MTLAccelerationStructureInstanceDescriptor");
+    //try generator.addStruct("MTLAccelerationStructureUserIDInstanceDescriptor");
+    try generator.addEnum("MTLAccelerationStructureInstanceDescriptorType");
+    //try generator.addStruct("MTLAccelerationStructureMotionInstanceDescriptor");
+    try generator.addInterface("MTLInstanceAccelerationStructureDescriptor");
+    try generator.addProtocol("MTLAccelerationStructure");
+
+    // MTLAccelerationStructureCommandEncoder.hpp
+    try generator.addProtocol("MTLAccelerationStructureCommandEncoder");
+
+    // MTLAccelerationStructureTypes.hpp
+    //try generator.addStruct("MTLPackedFloat3");
+    //try generator.addStruct("MTLPackedFloat4x3");
+    //try generator.addStruct("MTLAxisAlignedBoundingBox");
+
+    // MTLArgument.hpp
+    try generator.addEnum("MTLDataType");
+    try generator.addEnum("MTLArgumentType");
+    try generator.addEnum("MTLArgumentAccess");
+    try generator.addInterface("MTLType");
+    try generator.addInterface("MTLStructMember");
+    try generator.addInterface("MTLStructType");
+    try generator.addInterface("MTLArrayType");
+    try generator.addInterface("MTLPointerType");
+    try generator.addInterface("MTLTextureReferenceType");
+    try generator.addInterface("MTLArgument");
+
+    // MTLArgumentEncoder.hpp
+    try generator.addProtocol("MTLArgumentEncoder");
+
+    // MTLBinaryArchive.hpp
+    try generator.addEnum("MTLBinaryArchiveError");
+    try generator.addInterface("MTLBinaryArchiveDescriptor");
+    try generator.addProtocol("MTLBinaryArchive");
+
+    // MTLBlitCommandEncoder.hpp
+    try generator.addEnum("MTLBlitOption");
+    try generator.addProtocol("MTLBlitCommandEncoder");
+
+    // MTLBlitPass.hpp
+    try generator.addInterface("MTLBlitPassSampleBufferAttachmentDescriptor");
+    try generator.addInterface("MTLBlitPassSampleBufferAttachmentDescriptorArray");
+    try generator.addInterface("MTLBlitPassDescriptor");
+
+    // MTLBuffer.hpp
+    try generator.addProtocol("MTLBuffer");
+
+    // MTLCaptureManager.hpp
+    try generator.addEnum("MTLCaptureError");
+    try generator.addEnum("MTLCaptureDestination");
+    try generator.addInterface("MTLCaptureDescriptor");
+    try generator.addInterface("MTLCaptureManager");
+
+    // MTLCaptureScope.hpp
+    try generator.addProtocol("MTLCaptureScope");
+
+    // MTLCommandBuffer.hpp
+    try generator.addEnum("MTLCommandBufferStatus");
+    try generator.addEnum("MTLCommandBufferError");
+    try generator.addEnum("MTLCommandBufferErrorOption");
+    try generator.addEnum("MTLCommandEncoderErrorState");
+    try generator.addInterface("MTLCommandBufferDescriptor");
+    try generator.addProtocol("MTLCommandBufferEncoderInfo");
+    try generator.addEnum("MTLDispatchType");
+    //try generator.addType("MTLCommandBufferHandler");
+    try generator.addProtocol("MTLCommandBuffer");
+
+    // MTLCommandEncoder.hpp
+    try generator.addEnum("MTLResourceUsage");
+    try generator.addEnum("MTLBarrierScope");
+    try generator.addProtocol("MTLCommandEncoder");
+
+    // MTLCommandQueue.hpp
+    try generator.addProtocol("MTLCommandQueue");
+
+    // MTLComputeCommandEncoder.hpp
+    //try generator.addStruct("MTLDispatchThreadgroupsIndirectArguments");
+    //try generator.addStruct("MTLStageInRegionIndirectArguments");
+    try generator.addProtocol("MTLComputeCommandEncoder");
+
+    // MTLComputePass.hpp
+    try generator.addInterface("MTLComputePassSampleBufferAttachmentDescriptor");
+    try generator.addInterface("MTLComputePassSampleBufferAttachmentDescriptorArray");
+    try generator.addInterface("MTLComputePassDescriptor");
+
+    // MTLComputePipeline.hpp
+    try generator.addInterface("MTLComputePipelineReflection");
+    try generator.addInterface("MTLComputePipelineDescriptor");
+    try generator.addProtocol("MTLComputePipelineState");
+
+    // MTLCounters.hpp
+    //try generator.addConst("MTLCounterErrorDomain");
+    //try generator.addType("MTLCommonCounter");
+    //try generator.addConst("MTLCommonCounterTimestamp");
+    //try generator.addConst("MTLCommonCounterTessellationInputPatches");
+    //try generator.addConst("MTLCommonCounterVertexInvocations");
+    //try generator.addConst("MTLCommonCounterPostTessellationVertexInvocations");
+    //try generator.addConst("MTLCommonCounterClipperInvocations");
+    //try generator.addConst("MTLCommonCounterClipperPrimitivesOut");
+    //try generator.addConst("MTLCommonCounterFragmentInvocations");
+    //try generator.addConst("MTLCommonCounterFragmentsPassed");
+    //try generator.addConst("MTLCommonCounterComputeKernelInvocations");
+    //try generator.addConst("MTLCommonCounterTotalCycles");
+    //try generator.addConst("MTLCommonCounterVertexCycles");
+    //try generator.addConst("MTLCommonCounterTessellationCycles");
+    //try generator.addConst("MTLCommonCounterPostTessellationVertexCycles");
+    //try generator.addConst("MTLCommonCounterFragmentCycles");
+    //try generator.addConst("MTLCommonCounterRenderTargetWriteCycles");
+    //try generator.addType("MTLCommonCounterSet");
+    //try generator.addConst("MTLCommonCounterSetTimestamp");
+    //try generator.addConst("MTLCommonCounterSetStageUtilization");
+    //try generator.addConst("MTLCommonCounterSetStatistic");
+    //try generator.addStruct("MTLCounterResultTimestamp");
+    //try generator.addStruct("MTLCounterResultStageUtilization");
+    //try generator.addStruct("MTLCounterResultStatistic");
+    try generator.addProtocol("MTLCounter");
+    try generator.addProtocol("MTLCounterSet");
+    try generator.addInterface("MTLCounterSampleBufferDescriptor");
+    try generator.addProtocol("MTLCounterSampleBuffer");
+    try generator.addEnum("MTLCounterSampleBufferError");
+
+    // MTLDepthStencil.hpp
+    try generator.addEnum("MTLCompareFunction");
+    try generator.addEnum("MTLStencilOperation");
+    try generator.addInterface("MTLStencilDescriptor");
+    try generator.addInterface("MTLDepthStencilDescriptor");
+    try generator.addProtocol("MTLDepthStencilState");
+
+    // MTLDevice.hpp
+    try generator.addEnum("MTLFeatureSet");
+    try generator.addEnum("MTLGPUFamily");
+    try generator.addEnum("MTLDeviceLocation");
+    try generator.addEnum("MTLPipelineOption");
+    try generator.addEnum("MTLReadWriteTextureTier");
+    try generator.addEnum("MTLArgumentBuffersTier");
+    try generator.addEnum("MTLSparseTextureRegionAlignmentMode");
+    // try generator.addStruct("MTLAccelerationStructureSizes");
+    try generator.addEnum("MTLCounterSamplingPoint");
+    // try generator.addStruct("MTLSizeAndAlign");
+    try generator.addInterface("MTLArgumentDescriptor");
+    //try generator.addType("MTLDeviceNotificationName");
+    //try generator.addConst("MTLDeviceWasAddedNotification");
+    //try generator.addConst("MTLDeviceRemovalRequestedNotification));
+    //try generator.addConst("MTLDeviceWasRemovedNotification));
+    //try generator.addType("MTLDeviceNotificationHandlerBlock");
+    //try generator.addType("MTLAutoreleasedComputePipelineReflection");
+    //try generator.addType("MTLAutoreleasedRenderPipelineReflection");
+    //try generator.addType("MTLNewLibraryCompletionHandler");
+    //try generator.addType("MTLNewRenderPipelineStateCompletionHandler");
+    //try generator.addType("MTLNewRenderPipelineStateWithReflectionCompletionHandler");
+    //try generator.addType("MTLNewComputePipelineStateCompletionHandler");
+    //try generator.addType("MTLNewComputePipelineStateWithReflectionCompletionHandler");
+    //try generator.addType("MTLTimestamp");
+    //try generator.addFunction("MTLCreateSystemDefaultDevice");
+    //try generator.addFunction("MTLCopyAllDevices");
+    //try generator.addFunction("MTLCopyAllDevicesWithObserver");
+    //try generator.addFunction("MTLRemoveDeviceObserver");
+    try generator.addProtocol("MTLDevice");
+
+    // MTLDrawable.hpp
+    //try generator.addType("MTLDrawablePresentedHandler");
+    try generator.addProtocol("MTLDrawable");
+
+    // MTLDynamicLibrary.hpp
+    try generator.addEnum("MTLDynamicLibraryError");
+    try generator.addProtocol("MTLDynamicLibrary");
+
+    // MTLEvent.hpp
+    try generator.addProtocol("MTLEvent");
+    try generator.addInterface("MTLSharedEventListener");
+    // try generator.addType("MTLSharedEventNotificationBlock");
+    try generator.addProtocol("MTLSharedEvent");
+    try generator.addInterface("MTLSharedEventHandle");
+    // try generator.addStruct("MTLSharedEventHandlePrivate");
+
+    // MTLFence.hpp
+    try generator.addProtocol("MTLFence");
+
+    // MTLFunctionConstantValues.hpp
+    try generator.addInterface("MTLFunctionConstantValues");
+
+    // MTLFunctionDescriptor.hpp
+    try generator.addEnum("MTLFunctionOptions");
+    try generator.addInterface("MTLFunctionDescriptor");
+    try generator.addInterface("MTLIntersectionFunctionDescriptor");
+
+    // MTLFunctionHandle.hpp
+    try generator.addProtocol("MTLFunctionHandle");
+
+    // MTLFunctionLog.hpp
+    try generator.addEnum("MTLFunctionLogType");
+    try generator.addProtocol("MTLLogContainer");
+    try generator.addProtocol("MTLFunctionLogDebugLocation");
+    try generator.addProtocol("MTLFunctionLog");
+
+    // MTLFunctionStitching.hpp
+    try generator.addProtocol("MTLFunctionStitchingAttribute");
+    try generator.addInterface("MTLFunctionStitchingAttributeAlwaysInline");
+    try generator.addProtocol("MTLFunctionStitchingNode");
+    try generator.addInterface("MTLFunctionStitchingInputNode");
+    try generator.addInterface("MTLFunctionStitchingFunctionNode");
+    try generator.addInterface("MTLFunctionStitchingGraph");
+    try generator.addInterface("MTLStitchedLibraryDescriptor");
+
+    // MTLHeap.hpp
+    try generator.addEnum("MTLHeapType");
+    try generator.addInterface("MTLHeapDescriptor");
+    try generator.addProtocol("MTLHeap");
+
+    // MTLIndirectCommandBuffer.hpp
+    try generator.addEnum("MTLIndirectCommandType");
+    // try generator.addStruct("MTLIndirectCommandBufferExecutionRange");
+    try generator.addInterface("MTLIndirectCommandBufferDescriptor");
+    try generator.addProtocol("MTLIndirectCommandBuffer");
+
+    // MTLIndirectCommandEncoder.hpp
+    try generator.addProtocol("MTLIndirectRenderCommand");
+    try generator.addProtocol("MTLIndirectComputeCommand");
+
+    // MTLIntersectionFunctionTable.hpp
+    try generator.addEnum("MTLIntersectionFunctionSignature");
+    try generator.addInterface("MTLIntersectionFunctionTableDescriptor");
+    try generator.addProtocol("MTLIntersectionFunctionTable");
+
+    // MTLLibrary.hpp
+    try generator.addEnum("MTLPatchType");
+    try generator.addInterface("MTLVertexAttribute");
+    try generator.addInterface("MTLAttribute");
+    try generator.addEnum("MTLFunctionType");
+    try generator.addInterface("MTLFunctionConstant");
+    // try generator.addType("MTLAutoreleasedArgument");
+    try generator.addProtocol("MTLFunction");
+    try generator.addEnum("MTLLanguageVersion");
+    try generator.addEnum("MTLLibraryType");
+    try generator.addInterface("MTLCompileOptions");
+    try generator.addEnum("MTLLibraryError");
+    try generator.addProtocol("MTLLibrary");
+
+    // MTLLinkedFunctions.hpp
+    try generator.addInterface("MTLLinkedFunctions");
+
+    // MTLParallelRenderCommandEncoder.hpp
+    try generator.addProtocol("MTLParallelRenderCommandEncoder");
+
+    // MTLPipeline.hpp
+    try generator.addEnum("MTLMutability");
+    try generator.addInterface("MTLPipelineBufferDescriptor");
+    try generator.addInterface("MTLPipelineBufferDescriptorArray");
+
+    // MTLPixelFormat.hpp
+    try generator.addEnum("MTLPixelFormat");
+
+    // MTLRasterizationRate.hpp
+    try generator.addInterface("MTLRasterizationRateSampleArray");
+    try generator.addInterface("MTLRasterizationRateLayerDescriptor");
+    try generator.addInterface("MTLRasterizationRateLayerArray");
+    try generator.addInterface("MTLRasterizationRateMapDescriptor");
+    try generator.addProtocol("MTLRasterizationRateMap");
+
+    // MTLRenderCommandEncoder.hpp
+    try generator.addEnum("MTLPrimitiveType");
+    try generator.addEnum("MTLVisibilityResultMode");
+    // try generator.addStruct("MTLScissorRect");
+    // try generator.addStruct("MTLViewport");
+    try generator.addEnum("MTLCullMode");
+    try generator.addEnum("MTLWinding");
+    try generator.addEnum("MTLDepthClipMode");
+    try generator.addEnum("MTLTriangleFillMode");
+    // try generator.addStruct("MTLDrawPrimitivesIndirectArguments");
+    // try generator.addStruct("MTLDrawIndexedPrimitivesIndirectArguments");
+    // try generator.addStruct("MTLVertexAmplificationViewMapping");
+    // try generator.addStruct("MTLDrawPatchIndirectArguments");
+    // try generator.addStruct("MTLQuadTessellationFactorsHalf");
+    // try generator.addStruct("MTLTriangleTessellationFactorsHalf");
+    try generator.addEnum("MTLRenderStages");
+    try generator.addProtocol("MTLRenderCommandEncoder");
+
+    // MTLRenderPass.hpp
+    try generator.addEnum("MTLLoadAction");
+    try generator.addEnum("MTLStoreAction");
+    try generator.addEnum("MTLStoreActionOptions");
+    // try generator.addStruct("MTLClearColor");
+    try generator.addInterface("MTLRenderPassAttachmentDescriptor");
+    try generator.addInterface("MTLRenderPassColorAttachmentDescriptor");
+    try generator.addEnum("MTLMultisampleDepthResolveFilter");
+    try generator.addInterface("MTLRenderPassDepthAttachmentDescriptor");
+    try generator.addEnum("MTLMultisampleStencilResolveFilter");
+    try generator.addInterface("MTLRenderPassStencilAttachmentDescriptor");
+    try generator.addInterface("MTLRenderPassColorAttachmentDescriptorArray");
+    try generator.addInterface("MTLRenderPassSampleBufferAttachmentDescriptor");
+    try generator.addInterface("MTLRenderPassSampleBufferAttachmentDescriptorArray");
+    try generator.addInterface("MTLRenderPassDescriptor");
+
+    // MTLRenderPipeline.hpp
+    try generator.addEnum("MTLBlendFactor");
+    try generator.addEnum("MTLBlendOperation");
+    try generator.addEnum("MTLColorWriteMask");
+    try generator.addEnum("MTLPrimitiveTopologyClass");
+    try generator.addEnum("MTLTessellationPartitionMode");
+    try generator.addEnum("MTLTessellationFactorStepFunction");
+    try generator.addEnum("MTLTessellationFactorFormat");
+    try generator.addEnum("MTLTessellationControlPointIndexType");
+    try generator.addInterface("MTLRenderPipelineColorAttachmentDescriptor");
+    try generator.addInterface("MTLRenderPipelineReflection");
+    try generator.addInterface("MTLRenderPipelineDescriptor");
+    try generator.addInterface("MTLRenderPipelineFunctionsDescriptor");
+    try generator.addProtocol("MTLRenderPipelineState");
+    try generator.addInterface("MTLRenderPipelineColorAttachmentDescriptorArray");
+    try generator.addInterface("MTLTileRenderPipelineColorAttachmentDescriptor");
+    try generator.addInterface("MTLTileRenderPipelineColorAttachmentDescriptorArray");
+    try generator.addInterface("MTLTileRenderPipelineDescriptor");
+
+    // MTLResource.hpp
+    try generator.addEnum("MTLPurgeableState");
+    try generator.addEnum("MTLCPUCacheMode");
+    try generator.addEnum("MTLStorageMode");
+    try generator.addEnum("MTLHazardTrackingMode");
+    try generator.addEnum("MTLResourceOptions");
+    try generator.addProtocol("MTLResource");
+
+    // MTLResourceStateCommandEncoder.hpp
+    try generator.addEnum("MTLSparseTextureMappingMode");
+    // try generator.addStruct("MTLMapIndirectArguments");
+    try generator.addProtocol("MTLResourceStateCommandEncoder");
+
+    // MTLResourceStatePass.hpp
+    try generator.addInterface("MTLResourceStatePassSampleBufferAttachmentDescriptor");
+    try generator.addInterface("MTLResourceStatePassSampleBufferAttachmentDescriptorArray");
+    try generator.addInterface("MTLResourceStatePassDescriptor");
+
+    // MTLSampler.hpp
+    try generator.addEnum("MTLSamplerMinMagFilter");
+    try generator.addEnum("MTLSamplerMipFilter");
+    try generator.addEnum("MTLSamplerAddressMode");
+    try generator.addEnum("MTLSamplerBorderColor");
+    try generator.addInterface("MTLSamplerDescriptor");
+    try generator.addProtocol("MTLSamplerState");
+
+    // MTLStageInputOutputDescriptor.hpp
+    try generator.addEnum("MTLAttributeFormat");
+    try generator.addEnum("MTLIndexType");
+    try generator.addEnum("MTLStepFunction");
+    try generator.addInterface("MTLBufferLayoutDescriptor");
+    try generator.addInterface("MTLBufferLayoutDescriptorArray");
+    try generator.addInterface("MTLAttributeDescriptor");
+    try generator.addInterface("MTLAttributeDescriptorArray");
+    try generator.addInterface("MTLStageInputOutputDescriptor");
+
+    // MTLTexture.hpp
+    try generator.addEnum("MTLTextureType");
+    try generator.addEnum("MTLTextureSwizzle");
+    // try generator.addStruct("MTLTextureSwizzleChannels");
+    try generator.addInterface("MTLSharedTextureHandle");
+    // try generator.addStruct("MTLSharedTextureHandlePrivate");
+    try generator.addEnum("MTLTextureUsage");
+    //try generator.addEnum("MTLTextureCompressionType");       // SDK version
+    try generator.addInterface("MTLTextureDescriptor");
+    try generator.addProtocol("MTLTexture");
+
+    // MTLTypes.hpp
+    // try generator.addStruct("MTLOrigin");
+    // try generator.addStruct("MTLSize");
+    // try generator.addStruct("MTLRegion");
+    // try generator.addType("MTLCoordinate2D");
+    // try generator.addStruct("MTLSamplePosition");
+
+    // MTLVertexDescriptor.hpp
+    try generator.addEnum("MTLVertexFormat");
+    try generator.addEnum("MTLVertexStepFunction");
+    try generator.addInterface("MTLVertexBufferLayoutDescriptor");
+    try generator.addInterface("MTLVertexBufferLayoutDescriptorArray");
+    try generator.addInterface("MTLVertexAttributeDescriptor");
+    try generator.addInterface("MTLVertexAttributeDescriptorArray");
+    try generator.addInterface("MTLVertexDescriptor");
+
+    // MTLVisibleFunctionTable.hpp
+    try generator.addInterface("MTLVisibleFunctionTableDescriptor");
+    try generator.addProtocol("MTLVisibleFunctionTable");
+}
+
+fn generateAppKit(generator: anytype) !void {
+    // NSApplication.hpp
+    try generator.addEnum("NSWindowStyleMask");
+    try generator.addEnum("NSBackingStoreType");
+    try generator.addEnum("NSApplicationActivationPolicy");
+    try generator.addInterface("NSApplication");
+
+    // NSMenu.hpp
+    try generator.addInterface("NSMenu");
+
+    // NSMenuItem.hpp
+    try generator.addEnum("NSEventModifierFlags");
+    //try generator.addType("NSMenuItemCallback");
+    try generator.addInterface("NSMenuItem");
+
+    // NSRunningApplication.hpp
+    try generator.addInterface("NSRunningApplication");
+
+    // NSView.hpp
+    try generator.addInterface("NSView");
+
+    // NSWindow.hpp
+    try generator.addInterface("NSWindow");
+}
+
+fn generateMetalKit(generator: anytype) !void {
+    // MTKView.hpp
+    try generator.addInterface("MTKView");
 }
 
 pub fn main() anyerror!void {
-    var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{ .stack_trace_frames=8 }){};
+    var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{ .stack_trace_frames = 8 }){};
     defer std.debug.assert(!general_purpose_allocator.deinit());
 
-    allocator = general_purpose_allocator.allocator();
+    const allocator = general_purpose_allocator.allocator();
 
     var file = try std.fs.cwd().openFile("headers.json", .{});
     defer file.close();
@@ -240,35 +1645,25 @@ pub fn main() anyerror!void {
     const file_data = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(file_data);
 
-    var stream = std.json.TokenStream.init(file_data);
+    var parser = std.json.Parser.init(allocator, false);
+    defer parser.deinit();
 
-    @setEvalBranchQuota(10000);
-    const parsedData = try std.json.parse(AstNode, &stream, .{ .allocator = allocator, .ignore_unknown_fields = true, .allow_trailing_data = true });
-    defer std.json.parseFree(AstNode, parsedData, .{ .allocator = allocator });
+    var valueTree = try parser.parse(file_data);
+    defer valueTree.deinit();
 
-    containers = std.StringHashMap(ObjCContainer).init(allocator);
-    defer containers.deinit();
+    registry = Registry.init(allocator);
+    defer registry.deinit();
 
-    try convert(parsedData);
+    var converter = Converter.init(allocator);
+    defer converter.deinit();
 
-    std.log.info("DB", .{});
+    try converter.convert(valueTree.root);
 
-    {
-        var it1=containers.iterator();
-        while(it1.next()) |entry| {
-            var container = entry.value_ptr.*;
-            std.log.info("{s} {s}", .{container_type_string(container), container.name});
-            for (container.properties.items) |property| {
-                std.log.info("  property {s}: {s}", .{property.name, property.ty.name});
-            }
-            for (container.methods.items) |method| {
-                std.log.info("  method {s}", .{method.name});
-                std.log.info("    {s}", .{method.return_type.name});
-                for (method.params.items) |param| {
-                    std.log.info("    {s}: {s}", .{param.name, param.ty.name});
-                }
-            }
-            container.deinit();
-        }
-    }
+    const stdout = std.io.getStdOut().writer();
+    var generator = Generator(@TypeOf(stdout)).init(allocator, stdout);
+    defer generator.deinit();
+
+    try generateMetal(&generator);
+
+    try generator.generate();
 }
