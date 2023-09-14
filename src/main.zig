@@ -267,11 +267,11 @@ pub const Parser = struct {
         switch (self.lookahead.kind) {
             .kw_void => {
                 try self.match(.kw_void);
-                return self.parsePointer(.{ .@"void" = {} }, is_const, false);
+                return self.parsePointer(.{ .void = {} }, is_const, false);
             },
             .kw_bool => {
                 try self.match(.kw_bool);
-                return self.parsePointer(.{ .@"bool" = {} }, is_const, false);
+                return self.parsePointer(.{ .bool = {} }, is_const, false);
             },
             .kw_char => {
                 try self.match(.kw_char);
@@ -279,19 +279,19 @@ pub const Parser = struct {
             },
             .kw_short => {
                 try self.match(.kw_short);
-                return self.parsePointer(.{ .@"c_short" = {} }, is_const, false);
+                return self.parsePointer(.{ .c_short = {} }, is_const, false);
             },
             .kw_int => {
                 try self.match(.kw_int);
-                return self.parsePointer(.{ .@"c_int" = {} }, is_const, false);
+                return self.parsePointer(.{ .c_int = {} }, is_const, false);
             },
             .kw_long => {
                 try self.match(.kw_long);
                 if (self.lookahead.kind == .kw_long) {
                     try self.match(.kw_long);
-                    return self.parsePointer(.{ .@"c_longlong" = {} }, is_const, false);
+                    return self.parsePointer(.{ .c_longlong = {} }, is_const, false);
                 } else {
-                    return self.parsePointer(.{ .@"c_long" = {} }, is_const, false);
+                    return self.parsePointer(.{ .c_long = {} }, is_const, false);
                 }
             },
             .kw_unsigned => {
@@ -303,23 +303,23 @@ pub const Parser = struct {
                     },
                     .kw_short => {
                         try self.match(.kw_short);
-                        return self.parsePointer(.{ .@"c_ushort" = {} }, is_const, false);
+                        return self.parsePointer(.{ .c_ushort = {} }, is_const, false);
                     },
                     .kw_int => {
                         try self.match(.kw_int);
-                        return self.parsePointer(.{ .@"c_uint" = {} }, is_const, false);
+                        return self.parsePointer(.{ .c_uint = {} }, is_const, false);
                     },
                     .kw_long => {
                         try self.match(.kw_long);
                         if (self.lookahead.kind == .kw_long) {
                             try self.match(.kw_long);
-                            return self.parsePointer(.{ .@"c_ulonglong" = {} }, is_const, false);
+                            return self.parsePointer(.{ .c_ulonglong = {} }, is_const, false);
                         } else {
-                            return self.parsePointer(.{ .@"c_ulong" = {} }, is_const, false);
+                            return self.parsePointer(.{ .c_ulong = {} }, is_const, false);
                         }
                     },
                     else => {
-                        return self.parsePointer(.{ .@"c_uint" = {} }, is_const, false);
+                        return self.parsePointer(.{ .c_uint = {} }, is_const, false);
                     },
                 }
             },
@@ -445,7 +445,11 @@ pub const Parser = struct {
         }
     }
 
-    fn parsePointerSuffix(self: *Self, elem_type: Type, elem_is_const: bool, is_single: bool) !Type {
+    fn parsePointerSuffix(self: *Self, elem_type: Type, elem_is_const: bool, is_single: bool) error{
+        OutOfMemory,
+        UnexpectedToken,
+        UnexpectedCharacter,
+    }!Type {
         var is_const = false;
         var is_optional = false;
         while (true) {
@@ -486,10 +490,10 @@ pub const Parser = struct {
 
 pub fn getObject(x: std.json.Value, key: []const u8) ?std.json.Value {
     switch (x) {
-        .Object => |o| {
+        .object => |o| {
             if (o.get(key)) |v| {
                 switch (v) {
-                    .Object => return v,
+                    .object => return v,
                     else => return null,
                 }
             } else {
@@ -502,10 +506,10 @@ pub fn getObject(x: std.json.Value, key: []const u8) ?std.json.Value {
 
 pub fn getArray(x: std.json.Value, key: []const u8) []std.json.Value {
     switch (x) {
-        .Object => |o| {
+        .object => |o| {
             if (o.get(key)) |v| {
                 switch (v) {
-                    .Array => |a| {
+                    .array => |a| {
                         return a.items;
                     },
                     else => return &[_]std.json.Value{},
@@ -520,10 +524,10 @@ pub fn getArray(x: std.json.Value, key: []const u8) []std.json.Value {
 
 pub fn getString(x: std.json.Value, key: []const u8) []const u8 {
     switch (x) {
-        .Object => |o| {
+        .object => |o| {
             if (o.get(key)) |v| {
                 switch (v) {
-                    .String => |s| {
+                    .string => |s| {
                         return s;
                     },
                     else => return "",
@@ -538,10 +542,10 @@ pub fn getString(x: std.json.Value, key: []const u8) []const u8 {
 
 pub fn getBool(x: std.json.Value, key: []const u8) bool {
     switch (x) {
-        .Object => |o| {
+        .object => |o| {
             if (o.get(key)) |v| {
                 switch (v) {
-                    .Bool => |b| {
+                    .bool => |b| {
                         return b;
                     },
                     else => return false,
@@ -976,29 +980,31 @@ fn Generator(comptime WriterType: type) type {
                 try self.generateContainerName(container);
                 try self.writer.print(" = opaque {{\n", .{});
             }
-            try self.writer.print("    const Self = @This();\n", .{});
             if (container.super) |super| {
-                try self.writer.print("    pub const Super = ", .{});
-                try self.generateContainerName(super);
-                try self.writer.print(";\n", .{});
+                _ = super;
+                // try self.writer.print("    pub const Super = ", .{});
+                // try self.generateContainerName(super);
+                // try self.writer.print(";\n", .{});
             }
             if (container.protocols.items.len > 0) {
-                try self.writer.print("    pub const ConformsTo = &[_]type{{ ", .{});
-                var first = true;
-                for (container.protocols.items) |protocol| {
-                    if (!first)
-                        try self.writer.writeAll(", ");
-                    first = false;
-                    try self.generateContainerName(protocol);
-                }
-                try self.writer.print(" }};\n", .{});
+                // try self.writer.print("    pub const ConformsTo = &[_]type{{ ", .{});
+                // var first = true;
+                // for (container.protocols.items) |protocol| {
+                //     if (!first)
+                //         try self.writer.writeAll(", ");
+                //     first = false;
+                //     try self.generateContainerName(protocol);
+                // }
+                // try self.writer.print(" }};\n", .{});
             }
-            try self.writer.print("    pub usingnamespace Methods(Self);\n", .{});
             if (container.is_interface) {
                 try self.writer.print("    pub fn class() *c.objc_class {{ return class_", .{});
                 try self.generateContainerName(container);
                 try self.writer.print("; }}\n", .{});
             }
+            try self.writer.print("    pub usingnamespace Methods(", .{});
+            try self.generateContainerName(container);
+            try self.writer.print(");\n", .{});
             try self.writer.print("\n", .{});
             try self.writer.print("    pub fn Methods(comptime T: type) type {{\n", .{});
             try self.writer.print("        return struct {{\n", .{});
@@ -1098,10 +1104,10 @@ fn Generator(comptime WriterType: type) type {
 
         fn generateType(self: *Self, ty: Type) WriteError!void {
             switch (ty) {
-                .@"void" => {
+                .void => {
                     try self.writer.writeAll("void");
                 },
-                .@"bool" => {
+                .bool => {
                     try self.writer.writeAll("bool");
                 },
                 .int => |bits| {
@@ -1113,28 +1119,28 @@ fn Generator(comptime WriterType: type) type {
                 .float => |bits| {
                     try self.writer.print("f{d}", .{bits});
                 },
-                .@"c_short" => {
+                .c_short => {
                     try self.writer.writeAll("c_short");
                 },
-                .@"c_ushort" => {
+                .c_ushort => {
                     try self.writer.writeAll("c_ushort");
                 },
-                .@"c_int" => {
+                .c_int => {
                     try self.writer.writeAll("c_int");
                 },
-                .@"c_uint" => {
+                .c_uint => {
                     try self.writer.writeAll("c_uint");
                 },
-                .@"c_long" => {
+                .c_long => {
                     try self.writer.writeAll("c_long");
                 },
-                .@"c_ulong" => {
+                .c_ulong => {
                     try self.writer.writeAll("c_ulong");
                 },
-                .@"c_longlong" => {
+                .c_longlong => {
                     try self.writer.writeAll("c_longlong");
                 },
-                .@"c_ulonglong" => {
+                .c_ulonglong => {
                     try self.writer.writeAll("c_ulonglong");
                 },
                 .name => |n| {
@@ -1154,7 +1160,7 @@ fn Generator(comptime WriterType: type) type {
                     }
                     if (p.is_const)
                         try self.writer.writeAll("const ");
-                    if (p.child.* == .@"void") {
+                    if (p.child.* == .void) {
                         try self.writer.writeAll("anyopaque");
                     } else {
                         try self.generateType(p.child.*);
@@ -1231,7 +1237,11 @@ fn generateMetal(generator: anytype) !void {
     try generator.addProtocol("MTLAccelerationStructure");
 
     // MTLAccelerationStructureCommandEncoder.hpp
+    try generator.addEnum("MTLAccelerationStructureRefitOptions");
     try generator.addProtocol("MTLAccelerationStructureCommandEncoder");
+    try generator.addInterface("MTLAccelerationStructurePassSampleBufferAttachmentDescriptor");
+    try generator.addInterface("MTLAccelerationStructurePassSampleBufferAttachmentDescriptorArray");
+    try generator.addInterface("MTLAccelerationStructurePassDescriptor");
 
     // MTLAccelerationStructureTypes.hpp
     //try generator.addStruct("MTLPackedFloat3");
@@ -1240,6 +1250,7 @@ fn generateMetal(generator: anytype) !void {
 
     // MTLArgument.hpp
     try generator.addEnum("MTLDataType");
+    try generator.addEnum("MTLBindingType");
     try generator.addEnum("MTLArgumentType");
     try generator.addEnum("MTLArgumentAccess");
     try generator.addInterface("MTLType");
@@ -1249,6 +1260,11 @@ fn generateMetal(generator: anytype) !void {
     try generator.addInterface("MTLPointerType");
     try generator.addInterface("MTLTextureReferenceType");
     try generator.addInterface("MTLArgument");
+    try generator.addProtocol("MTLBinding");
+    try generator.addProtocol("MTLBufferBinding");
+    try generator.addProtocol("MTLThreadgroupBinding");
+    try generator.addProtocol("MTLTextureBinding");
+    try generator.addProtocol("MTLObjectPayloadBinding");
 
     // MTLArgumentEncoder.hpp
     try generator.addProtocol("MTLArgumentEncoder");
@@ -1352,6 +1368,7 @@ fn generateMetal(generator: anytype) !void {
     try generator.addProtocol("MTLDepthStencilState");
 
     // MTLDevice.hpp
+    try generator.addEnum("MTLIOCompressionMethod");
     try generator.addEnum("MTLFeatureSet");
     try generator.addEnum("MTLGPUFamily");
     try generator.addEnum("MTLDeviceLocation");
@@ -1359,6 +1376,7 @@ fn generateMetal(generator: anytype) !void {
     try generator.addEnum("MTLReadWriteTextureTier");
     try generator.addEnum("MTLArgumentBuffersTier");
     try generator.addEnum("MTLSparseTextureRegionAlignmentMode");
+    try generator.addEnum("MTLSparsePageSize");
     // try generator.addStruct("MTLAccelerationStructureSizes");
     try generator.addEnum("MTLCounterSamplingPoint");
     // try generator.addStruct("MTLSizeAndAlign");
@@ -1447,6 +1465,22 @@ fn generateMetal(generator: anytype) !void {
     try generator.addInterface("MTLIntersectionFunctionTableDescriptor");
     try generator.addProtocol("MTLIntersectionFunctionTable");
 
+    // MTLIOCommandBuffer.hpp
+    try generator.addEnum("MTLIOStatus");
+    //try generator.addType("MTLIOCommandBufferHandler");
+    try generator.addProtocol("MTLIOCommandBuffer");
+
+    // MTLIOCommandQueue.hpp
+    try generator.addEnum("MTLIOPriority");
+    try generator.addEnum("MTLIOCommandQueueType");
+    //try generator.addConst("MTLIOErrorDomain");
+    try generator.addEnum("MTLIOError");
+    try generator.addProtocol("MTLIOCommandQueue");
+    try generator.addProtocol("MTLIOScratchBuffer");
+    try generator.addProtocol("MTLIOScratchBufferAllocator");
+    try generator.addInterface("MTLIOCommandQueueDescriptor");
+    try generator.addProtocol("MTLIOFileHandle");
+
     // MTLLibrary.hpp
     try generator.addEnum("MTLPatchType");
     try generator.addInterface("MTLVertexAttribute");
@@ -1457,6 +1491,9 @@ fn generateMetal(generator: anytype) !void {
     try generator.addProtocol("MTLFunction");
     try generator.addEnum("MTLLanguageVersion");
     try generator.addEnum("MTLLibraryType");
+    try generator.addEnum("MTLLibraryOptimizationLevel");
+    try generator.addEnum("MTLCompileSymbolVisibility");
+
     try generator.addInterface("MTLCompileOptions");
     try generator.addEnum("MTLLibraryError");
     try generator.addProtocol("MTLLibrary");
@@ -1534,6 +1571,7 @@ fn generateMetal(generator: anytype) !void {
     try generator.addInterface("MTLTileRenderPipelineColorAttachmentDescriptor");
     try generator.addInterface("MTLTileRenderPipelineColorAttachmentDescriptorArray");
     try generator.addInterface("MTLTileRenderPipelineDescriptor");
+    try generator.addInterface("MTLMeshRenderPipelineDescriptor");
 
     // MTLResource.hpp
     try generator.addEnum("MTLPurgeableState");
@@ -1578,7 +1616,7 @@ fn generateMetal(generator: anytype) !void {
     try generator.addInterface("MTLSharedTextureHandle");
     // try generator.addStruct("MTLSharedTextureHandlePrivate");
     try generator.addEnum("MTLTextureUsage");
-    //try generator.addEnum("MTLTextureCompressionType");       // SDK version
+    try generator.addEnum("MTLTextureCompressionType");
     try generator.addInterface("MTLTextureDescriptor");
     try generator.addProtocol("MTLTexture");
 
@@ -1635,7 +1673,7 @@ fn generateMetalKit(generator: anytype) !void {
 
 pub fn main() anyerror!void {
     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{ .stack_trace_frames = 8 }){};
-    defer std.debug.assert(!general_purpose_allocator.deinit());
+    defer std.debug.assert(general_purpose_allocator.deinit() == .ok);
 
     const allocator = general_purpose_allocator.allocator();
 
@@ -1645,10 +1683,7 @@ pub fn main() anyerror!void {
     const file_data = try file.readToEndAlloc(allocator, std.math.maxInt(usize));
     defer allocator.free(file_data);
 
-    var parser = std.json.Parser.init(allocator, false);
-    defer parser.deinit();
-
-    var valueTree = try parser.parse(file_data);
+    var valueTree = try std.json.parseFromSlice(std.json.Value, allocator, file_data, .{});
     defer valueTree.deinit();
 
     registry = Registry.init(allocator);
@@ -1657,7 +1692,7 @@ pub fn main() anyerror!void {
     var converter = Converter.init(allocator);
     defer converter.deinit();
 
-    try converter.convert(valueTree.root);
+    try converter.convert(valueTree.value);
 
     const stdout = std.io.getStdOut().writer();
     var generator = Generator(@TypeOf(stdout)).init(allocator, stdout);
